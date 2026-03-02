@@ -82,8 +82,9 @@ export class FeishuChannel implements MessageChannel {
       connectionMode: (process.env.FEISHU_CONNECTION_MODE as "websocket" | "poll") || "poll",
       encryptKey: process.env.FEISHU_ENCRYPT_KEY,
       verificationToken: process.env.FEISHU_VERIFICATION_TOKEN,
-      showToolUse: process.env.FEISHU_SHOW_TOOL_USE === "false" ? false : true, // 默认 true
+      showToolUse: process.env.FEISHU_SHOW_TOOL_USE === "false" ?false : true, // 默认 true
       foldToolUse: process.env.FEISHU_FOLD_TOOL_USE === "false" ? false : true, // 默认 true（折叠）
+disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不禁用代理）
     };
   }
 
@@ -345,12 +346,25 @@ export class FeishuChannel implements MessageChannel {
       });
 
       // 创建 WebSocket 客户端
-      this.wsClient = new Lark.WSClient({
+      const wsOptions: any = {
         appId: this.config.appId,
         appSecret: this.config.appSecret,
-        domain: Lark.Domain.Feishu,  // 恢复 domain 参数
+        domain: Lark.Domain.Feishu,
         loggerLevel: Lark.LoggerLevel.INFO,
-      });
+      };
+
+      if (this.config.disableProxy) {
+        delete process.env.HTTP_PROXY;
+        delete process.env.HTTPS_PROXY;
+        delete process.env.http_proxy;
+        delete process.env.https_proxy;
+        delete process.env.ALL_PROXY;
+        delete process.env.all_proxy;
+        // wsOptions.agent = new https.Agent({ proxy: false });
+        console.log("[FeishuChannel] ✓ 已禁用系统代理");
+}
+
+      this.wsClient = new Lark.WSClient(wsOptions);
 
       // 启动连接
       this.wsClient.start({ eventDispatcher: this.eventDispatcher });
