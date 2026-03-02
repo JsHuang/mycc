@@ -59,7 +59,8 @@ function buildSessionOptions(model?: string) {
     model: model || DEFAULT_MODEL,
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
     permissionMode: "bypassPermissions",
-    ...(!isRoot && { allowDangerouslySkipPermissions: true }),
+    stderr: true,  // 捕获 stderr 以调试进程退出原因
+    ...(!isRoot && { allowDangerouslySkipPermissions: true}),
     env: {
       ...cleanEnv,
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",

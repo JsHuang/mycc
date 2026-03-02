@@ -8,7 +8,10 @@
 
 import type { MessageChannel } from "./interface.js";
 import type { SSEEvent } from "../adapters/interface.js";
+import { findProjectRoot } from "../config.js";
 import Lark from "@larksuiteoapi/node-sdk";
+import path from "path";
+import fs from "fs/promises";
 
 /**
  * 飞书通道配置
@@ -30,6 +33,9 @@ export interface FeishuChannelConfig {
   verificationToken?: string;
   /** 是否显示工具调用：true（显示）或 false（不显示），默认 true */
   showToolUse?: boolean;
+  /** 是否折叠工具调用信息：true（折叠）或 false（展开），默认 true（折叠）
+   * 类似网页端体验，显示为可展开的代码块 */
+  foldToolUse?: boolean;
 }
 
 /**
@@ -77,6 +83,7 @@ export class FeishuChannel implements MessageChannel {
       encryptKey: process.env.FEISHU_ENCRYPT_KEY,
       verificationToken: process.env.FEISHU_VERIFICATION_TOKEN,
       showToolUse: process.env.FEISHU_SHOW_TOOL_USE === "false" ? false : true, // 默认 true
+      foldToolUse: process.env.FEISHU_FOLD_TOOL_USE === "false" ? false : true, // 默认 true（折叠）
     };
   }
 
@@ -266,19 +273,11 @@ export class FeishuChannel implements MessageChannel {
    */
   private async startWebSocket(): Promise<void> {
     try {
-      // 创建 Event Dispatcher（只在配置了加密密钥时传入）
-      const dispatcherOptions: {
-        encryptKey?: string;
-        verificationToken?: string;
-      } = {};
-      if (this.config.encryptKey) {
-        dispatcherOptions.encryptKey = this.config.encryptKey;
-      }
-      if (this.config.verificationToken) {
-        dispatcherOptions.verificationToken = this.config.verificationToken;
-      }
-
-      this.eventDispatcher = new Lark.EventDispatcher(dispatcherOptions);
+      // 创建 Event Dispatcher（参考 feishu_ws_test.mjs）
+      this.eventDispatcher = new Lark.EventDispatcher({
+        encryptKey: this.config.encryptKey || "",
+        verificationToken: this.config.verificationToken || "",
+      });
 
       // 注册多个事件类型（参考 monitor.ts）
       this.eventDispatcher.register({
@@ -299,11 +298,20 @@ export class FeishuChannel implements MessageChannel {
             // await 解析结果（图片下载是异步的）
             const parsed = await this.parseFeishuMessage(event, messageId);
             if (parsed && this.messageCallback) {
-              const { text, images } = parsed;
+              const { text, images, filePath } = parsed;
               if (text || images) {
-                console.log(`[FeishuChannel] ✓ 收到消息: ${text ? text.substring(0, 50) : "[图片]"}...`);
+                console.log(`[FeishuChannel] ✓ 收到消息: ${text ? text.substring(0, 50) : "[图片/文件]"}...`);
                 // 传递消息 ID，以便后续可以删除表态
                 this.messageCallback(text, images, messageId);
+              } else if (filePath) {
+                console.log(`[FeishuChannel] ✓ 收到文件: ${filePath}`);
+                // 注释掉自动读取，改为询问用户
+                // this.messageCallback(`[文件] 已保存到: ${filePath}（可用 Read 工具读取内容）`, undefined, messageId);
+                this.messageCallback(
+                  `[文件] 已保存到:\n${filePath}\n\n需要我读取内容吗？请回复"读取"或其他需求。`,
+                  undefined,
+                  messageId
+                );
               } else {
                 console.log("[FeishuChannel] [DEBUG] 解析消息内容为空");
               }
@@ -340,8 +348,8 @@ export class FeishuChannel implements MessageChannel {
       this.wsClient = new Lark.WSClient({
         appId: this.config.appId,
         appSecret: this.config.appSecret,
-        domain: Lark.Domain.Feishu,
-        loggerLevel: Lark.LoggerLevel.info,
+        domain: Lark.Domain.Feishu,  // 恢复 domain 参数
+        loggerLevel: Lark.LoggerLevel.INFO,
       });
 
       // 启动连接
@@ -356,7 +364,7 @@ export class FeishuChannel implements MessageChannel {
   /**
    * 解析飞书消息（异步，支持图片下载）
    */
-  private parseFeishuMessage(event: any, messageId?: string): Promise<{ text: string; images?: Array<{ data: string; mediaType: string }> } | null> {
+  private parseFeishuMessage(event: any, messageId?: string): Promise<{ text: string; images?: Array<{ data: string; mediaType: string }>; filePath?: string } | null> {
     try {
       // 事件结构: event.sender + event.message（不是 event.event.message）
       if (!event?.message) return Promise.resolve(null);
@@ -390,6 +398,32 @@ export class FeishuChannel implements MessageChannel {
           }
         }
         console.log(`[FeishuChannel] 图片消息没有 image_key`);
+        return Promise.resolve({ text: "" });
+      }
+
+      if (messageType === "file") {
+        // 文件消息 - content 是 JSON 字符串
+        console.log(`[FeishuChannel] 收到文件消息`);
+        if (typeof content === "string") {
+          const parsed = JSON.parse(content);
+          const fileKey = parsed.file_key;
+          // 尝试从消息中获取原始文件名
+          const fileNameFromMessage = parsed.file_name;
+          if (fileKey) {
+            // 下载文件并保存到本地
+            return this.downloadFileFromFeishu(fileKey, messageId, fileNameFromMessage).then(result => {
+              if (result) {
+                const { fileName, filePath } = result;
+                return {
+                  text: `[文件] ${fileName}`,
+                  filePath: filePath
+                };
+              }
+              return { text: "[文件下载失败]" };
+            });
+          }
+        }
+        console.log(`[FeishuChannel] 文件消息没有 file_key`);
         return Promise.resolve({ text: "" });
       }
 
@@ -456,14 +490,22 @@ export class FeishuChannel implements MessageChannel {
     try {
       const name = event.name as string || "unknown";
       const input = event.input as Record<string, unknown> || {};
+      const fold = this.config.foldToolUse !== false; // 默认 true（折叠）
 
-      let output = `🔧 使用工具: **${name}**\n`;
+      let output = `🔧 **使用工具**: ${name}\n`;
 
       // 格式化输入参数
       if (Object.keys(input).length > 0) {
-        output += "```\n";
-        output += JSON.stringify(input, null, 2);
-        output += "\n```\n";
+        const inputJson = JSON.stringify(input, null, 2);
+        if (fold) {
+          // 折叠模式：使用飞书的代码块折叠语法
+          output += `<details>\n<summary>点击查看详情</summary>\n\n\`\`\`\n${inputJson}\n\`\`\`\n\n</details>\n`;
+        } else {
+          // 展开模式：直接显示代码块
+          output += "\`\`\`\n";
+          output += inputJson;
+          output += "\n\`\`\`\n";
+        }
       }
 
       return output;
@@ -480,16 +522,23 @@ export class FeishuChannel implements MessageChannel {
     try {
       const name = block.name as string || "unknown";
       const input = block.input as Record<string, unknown> || {};
+      const fold = this.config.foldToolUse !== false; // 默认 true（折叠）
 
       let output = `🔧 **${name}**`;
 
-      // 如果有输入参数，简要显示
+      // 如果有输入参数
       if (Object.keys(input).length > 0) {
-        const inputStr = JSON.stringify(input);
-        if (inputStr.length > 100) {
-          output += ` ${inputStr.substring(0, 100)}...`;
+        const inputJson = JSON.stringify(input, null, 2);
+        if (fold) {
+          // 折叠模式：使用飞书的代码块折叠语法
+          output += `\n<details>\n<summary>查看参数详情</summary>\n\n\`\`\`\n${inputJson}\n\`\`\`\n\n</details>`;
         } else {
-          output += ` ${inputStr}`;
+          // 展开模式：简要显示
+          if (inputJson.length > 100) {
+            output += `\n\`\`\`\n${inputJson}\n\`\`\``;
+          } else {
+            output += ` ${inputJson}`;
+          }
         }
       }
 
@@ -633,6 +682,150 @@ export class FeishuChannel implements MessageChannel {
     } catch (error) {
       console.error("[FeishuChannel] ✗ Download error:", error);
       return null;
+    }
+  }
+
+  /**
+   * 从飞书下载文件并保存到本地
+   * 保存路径: 1-Inbox/FeishuRecive/
+   */
+  private async downloadFileFromFeishu(fileKey: string, messageId?: string, fileNameFromMessage?: string): Promise<{ fileName: string; filePath: string } | null> {
+    try {
+      // 确保访问令牌有效
+      if (!this.accessToken || Date.now() > this.tokenExpireTime) {
+        this.accessToken = await this.getAccessToken();
+        if (!this.accessToken) {
+          return null;
+        }
+      }
+
+      // 使用 messageResource API 下载文件
+      const url = messageId
+        ? `https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/resources/${fileKey}?type=file`
+        : `https://open.feishu.cn/open-apis/im/v1/files/${fileKey}`;
+
+      console.log(`[FeishuChannel] [DEBUG] Downloading file: ${fileKey}, messageId: ${messageId}`);
+
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${this.accessToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[FeishuChannel] ✗ File download failed: ${response.status}`, errorText.substring(0, 200));
+        return null;
+      }
+
+      // 优先使用消息中传入的文件名
+      let fileName = fileNameFromMessage || `file_${Date.now()}`;
+
+      // 如果没有从消息中获取到文件名，从 header 中尝试
+      if (!fileNameFromMessage) {
+        const contentDisposition = response.headers.get("content-disposition");
+        if (contentDisposition) {
+          // 先尝试 filename* 格式 (RFC 5987, UTF-8''encoded)
+          const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;=\n]+)/i);
+          if (filenameStarMatch) {
+            fileName = decodeURIComponent(filenameStarMatch[1]);
+          } else {
+            // 再尝试普通 filename 格式
+            const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+            if (match) {
+              let rawName = match[1].replace(/['"]/g, "");
+              // 检查是否 URL 编码
+              if (rawName.includes("%")) {
+                try {
+                  fileName = decodeURIComponent(rawName);
+                } catch {
+                  fileName = rawName;
+                }
+              } else {
+                fileName = rawName;
+              }
+            }
+          }
+        }
+
+        // 如果没有从 header 获取到文件名，尝试从 fileKey 生成
+        if (!fileName || fileName === `file_${Date.now()}`) {
+          fileName = `feishu_file_${fileKey.substring(0, 8)}`;
+        }
+      }
+
+      // 清理文件名中的非法字符
+      fileName = fileName.replace(/[<>:"/\\|?*]/g, "_");
+
+      // 获取文件内容
+      const buffer = await response.arrayBuffer();
+
+      // 获取项目根目录
+      const projectRoot = findProjectRoot(process.cwd()) || process.cwd();
+
+      // 创建保存目录
+      const saveDir = path.join(projectRoot, "1-Inbox", "FeishuRecive");
+      await fs.mkdir(saveDir, { recursive: true });
+
+      // 保存文件
+      const filePath = path.join(saveDir, fileName);
+      await fs.writeFile(filePath, Buffer.from(buffer));
+
+      console.log(`[FeishuChannel] ✓ File saved: ${filePath} (${buffer.length} bytes)`);
+
+      // 更新 README.md
+      await this.updateFeishuReadme(fileName, filePath, buffer.length);
+
+      return { fileName, filePath };
+    } catch (error) {
+      console.error("[FeishuChannel] ✗ Download file error:", error);
+      return null;
+    }
+  }
+
+  /**
+   * 更新 Feishu 目录的 README.md
+   */
+  private async updateFeishuReadme(fileName: string, filePath: string, fileSize: number): Promise<void> {
+    try {
+      const projectRoot = findProjectRoot(process.cwd()) || process.cwd();
+      const readmePath = path.join(projectRoot, "1-Inbox", "FeishuRecive", "README.md");
+      const timestamp = new Date().toISOString().split("T")[0];
+      const sizeStr = fileSize > 1024 * 1024 ? `${(fileSize / 1024 / 1024).toFixed(2)} MB` : `${(fileSize / 1024).toFixed(2)} KB`;
+
+      let content = "";
+      try {
+        await fs.access(readmePath);
+        content = await fs.readFile(readmePath, "utf-8");
+      } catch {
+        // README 不存在，跳过
+      }
+
+      // 检查是否已存在该文件的记录
+      if (content.includes(fileName)) {
+        console.log(`[FeishuChannel] File already in README: ${fileName}`);
+        return;
+      }
+
+      // 添加文件记录
+      const newEntry = `- ${fileName} (${sizeStr}) - ${timestamp}\n`;
+
+      if (content.includes("## 文件列表")) {
+        // 插入到文件列表后面
+        content = content.replace(
+          /(\n## 文件列表\n)/,
+          `$1${newEntry}`
+        );
+      } else {
+        // 创建新的文件列表部分
+        content = content + "\n## 文件列表\n" + newEntry;
+      }
+
+      await fs.writeFile(readmePath, content, "utf-8");
+      console.log(`[FeishuChannel] ✓ Updated README.md for ${fileName}`);
+    } catch (error) {
+      console.error("[FeishuChannel] ✗ Update README error:", error);
     }
   }
 
