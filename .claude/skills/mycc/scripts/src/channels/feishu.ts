@@ -504,22 +504,14 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
     try {
       const name = event.name as string || "unknown";
       const input = event.input as Record<string, unknown> || {};
-      const fold = this.config.foldToolUse !== false; // 默认 true（折叠）
 
       let output = `🔧 **使用工具**: ${name}\n`;
 
       // 格式化输入参数
       if (Object.keys(input).length > 0) {
         const inputJson = JSON.stringify(input, null, 2);
-        if (fold) {
-          // 折叠模式：使用飞书的代码块折叠语法
-          output += `<details>\n<summary>点击查看详情</summary>\n\n\`\`\`\n${inputJson}\n\`\`\`\n\n</details>\n`;
-        } else {
-          // 展开模式：直接显示代码块
-          output += "\`\`\`\n";
-          output += inputJson;
-          output += "\n\`\`\`\n";
-        }
+        // 飞书会自动折叠长代码块
+        output += `\`\`\`json\n${inputJson}\n\`\`\`\n`;
       }
 
       return output;
@@ -536,24 +528,14 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
     try {
       const name = block.name as string || "unknown";
       const input = block.input as Record<string, unknown> || {};
-      const fold = this.config.foldToolUse !== false; // 默认 true（折叠）
 
       let output = `🔧 **${name}**`;
 
       // 如果有输入参数
       if (Object.keys(input).length > 0) {
         const inputJson = JSON.stringify(input, null, 2);
-        if (fold) {
-          // 折叠模式：使用飞书的代码块折叠语法
-          output += `\n<details>\n<summary>查看参数详情</summary>\n\n\`\`\`\n${inputJson}\n\`\`\`\n\n</details>`;
-        } else {
-          // 展开模式：简要显示
-          if (inputJson.length > 100) {
-            output += `\n\`\`\`\n${inputJson}\n\`\`\``;
-          } else {
-            output += ` ${inputJson}`;
-          }
-        }
+        // 飞书会自动折叠长代码块
+        output += `\n\`\`\`json\n${inputJson}\n\`\`\``;
       }
 
       return output;
@@ -879,7 +861,8 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
         return await this.sendInteractiveCard(userId, cardContent);
       }
 
-      // 没有表格，使用普通 Markdown 消息
+
+      // 没有表格和折叠，使用普通 Markdown 消息
       return await this.sendMarkdownMessage(userId, text);
     } catch (error) {
       console.error("[FeishuChannel] ✗ Send error:", error);
@@ -925,20 +908,32 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
   }
 
   /**
-   * 发送 Markdown 消息
+   * 发送 Markdown 消息（使用交互式卡片格式）
    */
   private async sendMarkdownMessage(userId: string, text: string): Promise<boolean> {
     try {
       const receiveIdType = this.config.receiveIdType || "open_id";
 
+      // 构建交互式卡片
+      const cardContent = {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "tag": "lark_md",
+              "content": text
+            }
+          }
+        ]
+      };
+
       const responseBody = {
         receive_id: userId,
-        msg_type: "post",
-        content: JSON.stringify({
-          zh_cn: {
-            content: [[{ tag: "md", text }]]
-          }
-        })
+        msg_type: "interactive",
+        content: JSON.stringify(cardContent)
       };
 
       const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
@@ -1232,10 +1227,11 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
     };
   }
 
+
   /**
    * 解析表格行
    */
-  private parseTableRow(line: string): string[] {
+private parseTableRow(line: string): string[] {
     // 移除首尾的 |
     let trimmed = line.trim();
     if (trimmed.startsWith("|")) {
