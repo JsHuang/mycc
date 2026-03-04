@@ -909,23 +909,21 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
 
   /**
    * 发送 Markdown 消息（使用交互式卡片格式）
+   * 使用 tag: "markdown" 支持代码块渲染
    */
   private async sendMarkdownMessage(userId: string, text: string): Promise<boolean> {
     try {
       const receiveIdType = this.config.receiveIdType || "open_id";
 
-      // 构建交互式卡片
+      // 构建交互式卡片，使用 markdown 标签支持代码块渲染
       const cardContent = {
         "config": {
           "wide_screen_mode": true
         },
         "elements": [
           {
-            "tag": "div",
-            "text": {
-              "tag": "lark_md",
-              "content": text
-            }
+            "tag": "markdown",
+            "content": text
           }
         ]
       };

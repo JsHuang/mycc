@@ -46,7 +46,10 @@ export class FeishuCommands {
       return;
     }
 
-    // 普通对话：检查是否有活跃会话
+    // 检查是否需要显示会话提示
+    let showSessionHint = false;
+    let sessionHint = "";
+    let autoSelectedSession = false;  // 标记是否是自动选择的会话
     if (!this._currentSessionId) {
       console.log(`[CC] 无活跃会话，尝试自动选择最近的历史会话`);
 
@@ -55,12 +58,14 @@ export class FeishuCommands {
         if (result.conversations.length > 0) {
           const latestSession = result.conversations[0];
           this._currentSessionId = latestSession.sessionId;
+          autoSelectedSession = true;  // 标记为自动选择
 
           const title = latestSession.customTitle || latestSession.firstPrompt?.substring(0, 30) || "历史会话";
           const timeAgo = this.formatTimeAgo(latestSession.lastTime || latestSession.modified || Date.now());
 
           console.log(`[CC] 自动选择会话: ${this._currentSessionId} (${title})`);
-          await this.sendToFeishu(`已自动使用最近的会话：${title}\n${timeAgo}\n\n继续你的对话...`);
+          showSessionHint = true;
+          sessionHint = `已自动使用最近的会话：${title} (${timeAgo})\n\n`;
         } else {
           console.log(`[CC] 没有历史会话，显示帮助信息`);
           await this.sendToFeishu("还没有会话记录。\n\n发送任意消息开始新对话\n发送 /help 查看所有命令");
@@ -75,6 +80,7 @@ export class FeishuCommands {
 
     console.log(`[CC] 使用当前会话: ${this._currentSessionId}`);
 
+    let isFirstMessage = showSessionHint;
     try {
       for await (const data of this.deps.adapter.chat({
         message: trimmedMessage,
@@ -83,12 +89,17 @@ export class FeishuCommands {
         images: images,
       })) {
         if (data && typeof data === "object") {
-          if (data.type === "system" && "session_id" in data) {
+          if (data.type === "system" && "session_id" in data && !autoSelectedSession) {
+            // 如果是自动选择的会话，不覆盖会话 ID
             this._currentSessionId = data.session_id as string;
             console.log(`[CC] 会话已更新: ${this._currentSessionId}`);
           }
           if (data.type === "text" && data.text) {
-            const text = String(data.text);
+            let text = String(data.text);
+            if (isFirstMessage) {
+              text = sessionHint + text;
+              isFirstMessage = false;
+            }
             console.log(`[CC] 发送文本: ${text.substring(0, 30)}...`);
             await this.sendToFeishu(text);
           } else if (data.type === "assistant") {
@@ -96,10 +107,18 @@ export class FeishuCommands {
             if (assistantEvent.message?.content) {
               for (const block of assistantEvent.message.content) {
                 if (block.type === "text" && block.text) {
-                  const text = String(block.text);
+                  let text = String(block.text);
+                  if (isFirstMessage) {
+                    text = sessionHint + text;
+                    isFirstMessage = false;
+                  }
                   console.log(`[CC] 发送文本: ${text.substring(0, 30)}...`);
                   await this.sendToFeishu(text);
                 } else if (block.type === "tool_use") {
+                  // 工具调用时也需要清除 firstMessage 标志
+                  if (isFirstMessage) {
+                    isFirstMessage = false;
+                  }
                   const name = block.name || "unknown";
                   let toolCallText = `**使用工具: ${name}**`;
                   if (block.input && Object.keys(block.input).length > 0) {
