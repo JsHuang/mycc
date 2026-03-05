@@ -119,6 +119,7 @@ curl -o /tmp/article_img_1.jpg "<图片链接>"
 2. **图片类文章**：重点识别图片中的文字
 3. **需要登录的内容**：无法获取
 4. **自动保存**：每次总结会自动保存到 `1-Inbox/阅读记录/` 目录
+5. **飞书云文档**：可选自动保存到飞书云文档（需配置）
 
 ---
 
@@ -141,5 +142,57 @@ curl -o /tmp/article_img_1.jpg "<图片链接>"
 
 ---
 
+## 飞书云文档集成
+
+要将总结自动保存到飞书云文档，请配置以下环境变量：
+
+```bash
+# 在 .env 文件中添加
+FEISHU_SAVE_TO_DOC=true
+FEISHU_APP_ID=your_app_id
+FEISHU_APP_SECRET=your_app_secret
+FEISHU_DOC_SPACE_ID=your_folder_token  # 可选：知识库文件夹 token
+```
+
+**配置说明**：
+- `FEISHU_SAVE_TO_DOC=true`：启用自动保存功能
+- `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`：飞书应用凭证
+- `FEISHU_DOC_SPACE_ID`：可选，文档保存的文件夹 token
+
+### 如何获取 folder_token
+
+1. 打开知识库页面
+2. 找到目标文件夹
+3. 从 URL 中提取 token：`https://xxx.feishu.cn/wiki/[folder_token]`
+
+### 权限要求
+
+**必需权限**：
+- `doc:document` - 创建、编辑文档
+- `doc:document:readonly` - 读取文档
+
+**知识库写入权限**（如果使用 FEISHU_DOC_SPACE_ID）：
+1. 在飞书开放平台为应用添加 `doc:document` 权限
+2. 在知识库设置中，为飞书应用授予「可编辑」权限
+
+**权限错误处理**：
+- 如果 `FEISHU_DOC_SPACE_ID` 无效或无权限，会自动降级到个人云空间
+- 文档创建成功后会返回链接
+
+### 功能特性
+
+- ✅ 自动创建云文档
+- ✅ Markdown 内容写入（标题加粗显示）
+- ✅ 返回文档链接便于访问
+- ✅ 权限错误自动降级处理
+
+### 已知限制
+
+- 标题以加粗文本形式显示（暂不支持真正的标题块）
+- 列表、引用等格式转为普通文本
+- 单个文本块最多 10000 字符
+
+---
+
 *创建：2026-01-22*
-*更新：2026-03-03（添加自动保存功能）*
+*更新：2026-03-04（添加飞书云文档集成）*

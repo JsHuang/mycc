@@ -22,6 +22,16 @@ import json
 from pathlib import Path
 from datetime import datetime
 
+# 加载 .env 文件
+try:
+    from dotenv import load_dotenv
+    # 尝试从项目根目录加载 .env
+    env_path = Path(__file__).parent.parent.parent.parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass  # 如果没有安装 python-dotenv，跳过
+
 
 # 微信客户端 User-Agent
 WECHAT_UA = "Mozilla/5.0 (Linux; Android 13; V2148A) AppleWebKit/537.36 Chrome/116.0.0.0 Mobile Safari/537.36 MicroMessenger/8.0.49.2600 WeChat/arm64 Weixin NetType/WIFI Language/zh_CN"
@@ -254,6 +264,44 @@ def output_markdown(article: dict, image_paths: list = None):
 *抓取时间: """ + datetime.now().strftime("%Y-%m-%d %H:%M") + "*\n"
 
     print(md)
+    return md
+
+
+def save_to_feishu_doc(article: dict, markdown_content: str):
+    """将总结保存到飞书云文档"""
+    try:
+        # 导入飞书云文档模块
+        from feishu_doc import FeishuDocClient
+
+        # 检查是否配置了飞书云文档保存
+        if not os.getenv("FEISHU_SAVE_TO_DOC") == "true":
+            return
+
+        # 检查必要的环境变量
+        app_id = os.getenv("FEISHU_APP_ID")
+        app_secret = os.getenv("FEISHU_APP_SECRET")
+
+        if not app_id or not app_secret:
+            print("⚠️  未配置 FEISHU_APP_ID 或 FEISHU_APP_SECRET，无法保存到飞书云文档")
+            return
+
+        # 创建客户端
+        client = FeishuDocClient()
+
+        # 生成文档标题
+        title = article["title"]
+        if len(title) > 50:
+            title = title[:47] + "..."
+
+        # 创建文档
+        print("📁 正在保存到飞书云文档...")
+        url = client.create_document_simple(title, markdown_content)
+
+        # 输出文档链接
+        print(f"✅ 保存成功！文档链接: {url}")
+
+    except Exception as e:
+        print(f"❌ 保存到飞书云文档失败: {e}")
 
 
 def main():
@@ -292,9 +340,13 @@ def main():
             if json_flag:
                 output_json(article)
             elif markdown_flag:
-                output_markdown(article, image_paths)
+                markdown_content = output_markdown(article, image_paths)
+                save_to_feishu_doc(article, markdown_content)
             else:
                 output_summary(article, image_paths)
+                # 生成 markdown 内容用于保存
+                markdown_content = output_markdown(article, image_paths)
+                save_to_feishu_doc(article, markdown_content)
 
         elif len(urls) > 1:
             # 批量处理
