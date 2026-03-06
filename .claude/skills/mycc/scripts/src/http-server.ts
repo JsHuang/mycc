@@ -255,6 +255,14 @@ export class HttpServer {
   }
 
   private async handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
+    // 检查通道类型
+    const channelType = process.env.CHANNEL_TYPE?.toLowerCase() || 'all';
+    if (channelType === 'feishu') {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Web 通道已禁用（仅飞书模式）" }));
+      return;
+    }
+
     // 验证 token
     const authHeader = req.headers.authorization;
     const token = authHeader?.replace("Bearer ", "");
@@ -706,11 +714,20 @@ export class HttpServer {
       });
 
       const port = Number(process.env.PORT || 18080);
+
+      // 读取通道配置
+      const channelType = process.env.CHANNEL_TYPE?.toLowerCase() || 'all';
+      console.log(`[Channels] 通道模式: ${channelType}`);
+
       this.server.listen(port, async () => {
         console.log(`[${this.isTls ? "HTTPS" : "HTTP"}] 服务启动在端口 ${port}`);
 
-        // 动态加载并注册飞书通道（如果配置了环境变量）
-        if (process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
+        // 根据 CHANNEL_TYPE 决定启动哪些通道
+        const enableFeishu = channelType === 'feishu' || channelType === 'all';
+        const enableWeb = channelType === 'web' || channelType === 'all';
+
+        // 动态加载并注册飞书通道（如果启用且配置了环境变量）
+        if (enableFeishu && process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
           try {
             const { FeishuChannel } = await import("./channels/feishu.js");
             this.feishuChannel = new FeishuChannel();
@@ -724,12 +741,22 @@ export class HttpServer {
           } catch (err) {
             console.warn("[Channels] 飞书通道加载失败:", err);
           }
+        } else if (channelType === 'feishu') {
+          console.log("[Channels] 飞书通道未配置 FEISHU_APP_ID 或 FEISHU_APP_SECRET");
         } else {
-          console.log("[Channels] 飞书通道未配置");
+          console.log("[Channels] 飞书通道未启用");
         }
+
+        // Web 通道始终注册（通过 SSE 连接）
+        // 但根据 channelType 决定是否启动
 
         // 启动所有通道（包括飞书长连接）
         await this.channelManager.startAll();
+
+        // 如果只启用飞书通道，跳过 Web 通道的 SSE 准备
+        if (!enableWeb) {
+          console.log("[Channels] Web 通道已禁用（仅飞书模式）");
+        }
 
         // 启动心跳定时器
         this.heartbeatTimer = setInterval(() => {
