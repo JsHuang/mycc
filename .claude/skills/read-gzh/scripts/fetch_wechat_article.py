@@ -267,43 +267,6 @@ def output_markdown(article: dict, image_paths: list = None):
     return md
 
 
-def save_to_feishu_doc(article: dict, markdown_content: str):
-    """将总结保存到飞书云文档"""
-    try:
-        # 导入飞书云文档模块
-        from feishu_doc import FeishuDocClient
-
-        # 检查是否配置了飞书云文档保存
-        if not os.getenv("FEISHU_SAVE_TO_DOC") == "true":
-            return
-
-        # 检查必要的环境变量
-        app_id = os.getenv("FEISHU_APP_ID")
-        app_secret = os.getenv("FEISHU_APP_SECRET")
-
-        if not app_id or not app_secret:
-            print("⚠️  未配置 FEISHU_APP_ID 或 FEISHU_APP_SECRET，无法保存到飞书云文档")
-            return
-
-        # 创建客户端
-        client = FeishuDocClient()
-
-        # 生成文档标题
-        title = article["title"]
-        if len(title) > 50:
-            title = title[:47] + "..."
-
-        # 创建文档
-        print("📁 正在保存到飞书云文档...")
-        url = client.create_document_simple(title, markdown_content)
-
-        # 输出文档链接
-        print(f"✅ 保存成功！文档链接: {url}")
-
-    except Exception as e:
-        print(f"❌ 保存到飞书云文档失败: {e}")
-
-
 def main():
     if len(sys.argv) < 2:
         print("用法:")
@@ -340,13 +303,10 @@ def main():
             if json_flag:
                 output_json(article)
             elif markdown_flag:
-                markdown_content = output_markdown(article, image_paths)
-                save_to_feishu_doc(article, markdown_content)
+                output_markdown(article, image_paths)
             else:
                 output_summary(article, image_paths)
-                # 生成 markdown 内容用于保存
-                markdown_content = output_markdown(article, image_paths)
-                save_to_feishu_doc(article, markdown_content)
+                output_markdown(article, image_paths)
 
         elif len(urls) > 1:
             # 批量处理
