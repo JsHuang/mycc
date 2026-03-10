@@ -174,36 +174,43 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
               console.log(`[FeishuChannel] [DEBUG] block type: ${blockType}`, JSON.stringify(block).substring(0, 200));
               if ("type" in block && block.type === "text" && "text" in block) {
                 // 纯文本内容 - 逐条保存
-                // 如果 showToolUse 为 false，将工具调用信息替换为简洁提示
+                // 如果 showToolUse 为 false，完全不显示工具信息
+                // 如果 foldToolUse 为 true，只显示简洁提示
                 const textContent = String(block.text);
                 if (textContent.includes("**使用工具:")) {
                   if (this.config.showToolUse) {
-                    // 显示完整工具调用
-                    textParts.push(textContent);
-                  } else {
-                    // 简洁提示：提取工具名称
-                    const toolNameMatch = textContent.match(/\*\*使用工具:\s*(\w+)\*\*/);
-                    const toolName = toolNameMatch ? toolNameMatch[1] : "工具";
-                    textParts.push(`🔄 正在执行 ${toolName}...`);
+                    if (this.config.foldToolUse) {
+                      // 简洁提示：提取工具名称
+                      const toolNameMatch = textContent.match(/\*\*使用工具:\s*(\w+)\*\*/);
+                      const toolName = toolNameMatch ? toolNameMatch[1] : "工具";
+                      textParts.push(`🔄 正在执行 ${toolName}...`);
+                    } else {
+                      // 显示完整工具调用信息
+                      textParts.push(textContent);
+                    }
                   }
+                  // showToolUse 为 false 时，不添加任何内容
                 } else {
                   textParts.push(textContent);
                 }
               } else if ("type" in block && block.type === "tool_use") {
                 // 工具调用
                 if (this.config.showToolUse) {
-                  // 显示完整工具调用
-                  console.log(`[FeishuChannel] [DEBUG] 找到 tool_use block，showToolUse=${this.config.showToolUse}`);
-                  const toolCall = this.formatToolUseBlock(block as Record<string, unknown>);
-                  if (toolCall) {
-                    toolCalls.push(toolCall);
+                  if (this.config.foldToolUse) {
+                    // 简洁提示：提取工具名称
+                    const input = (block as any).input || {};
+                    const toolName = input.name || "工具";
+                    textParts.push(`🔄 正在执行 ${toolName}...`);
+                  } else {
+                    // 显示完整工具调用
+                    console.log(`[FeishuChannel] [DEBUG] 找到 tool_use block，showToolUse=${this.config.showToolUse}, foldToolUse=${this.config.foldToolUse}`);
+                    const toolCall = this.formatToolUseBlock(block as Record<string, unknown>);
+                    if (toolCall) {
+                      toolCalls.push(toolCall);
+                    }
                   }
-                } else {
-                  // 简洁提示：提取工具名称
-                  const input = (block as any).input || {};
-                  const toolName = input.name || "工具";
-                  textParts.push(`🔄 正在执行 ${toolName}...`);
                 }
+                // showToolUse 为 false 时，不添加任何内容
               }
             }
           }
@@ -230,8 +237,8 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
                 // 发送文本
                 await this.sendMessageToFeishu(textParts[textIndex], sessionId);
                 textIndex++;
-              } else if ("type" in block && block.type === "tool_use" && this.config.showToolUse && toolIndex < toolCalls.length) {
-                // 发送工具调用
+              } else if ("type" in block && block.type === "tool_use" && this.config.showToolUse && !this.config.foldToolUse && toolIndex < toolCalls.length) {
+                // 发送工具调用（仅当 showToolUse=true 且 foldToolUse=false 时）
                 console.log(`[FeishuChannel] [DEBUG] 发送工具调用: ${toolCalls[toolIndex].substring(0, 50)}...`);
                 await this.sendMessageToFeishu(toolCalls[toolIndex], sessionId);
                 toolIndex++;
