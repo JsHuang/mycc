@@ -111,11 +111,18 @@ async function startServer(args: string[]) {
   const publicUrl = loadPublicUrl(process.cwd(), scriptsDir);
   const isPublicMode = !!publicUrl;
 
+  // 检测通道类型
+  const channelType = process.env.CHANNEL_TYPE?.toLowerCase() || 'all';
+  const isFeishuOnly = channelType === 'feishu';
+
   if (isPublicMode) {
     console.log(chalk.cyan(`\n公网模式: ${publicUrl}`));
     console.log(chalk.gray("  跳过 cloudflared（不需要内网穿透）\n"));
+  } else if (isFeishuOnly) {
+    // 飞书-only 模式不需要 tunnel，跳过 cloudflared 检查
+    console.log(chalk.cyan(`\n飞书模式: 仅飞书通道（跳过 tunnel）\n`));
   } else {
-    // 只有内网模式才需要 cloudflared
+    // 只有内网模式且非飞书-only 才需要 cloudflared
     console.log("检查 cloudflared...");
     const cloudflaredAvailable = await checkCloudflared();
     if (!cloudflaredAvailable) {
@@ -297,6 +304,11 @@ ${skillLine}
     // 公网模式：直接用 PUBLIC_URL，不启动 tunnel
     tunnelUrl = publicUrl!;
     console.log(chalk.green(`✓ 使用公网地址: ${tunnelUrl}\n`));
+  } else if (isFeishuOnly) {
+    // 飞书-only 模式不需要 tunnel
+    tunnelUrl = "http://localhost feishu-only";
+    tunnelManager = null;
+    console.log(chalk.gray("  跳过 tunnel（飞书通道使用 WebSocket 直连）\n"));
   } else {
     // 内网模式：启动 cloudflared tunnel（使用 TunnelManager 保活）
     console.log(chalk.yellow("启动 tunnel...\n"));
@@ -344,10 +356,18 @@ ${skillLine}
   let token: string | null = null;
   let mpUrl: string;
 
-  if (tunnelManager === null && !isPublicMode) {
-    // Tunnel 不可用，跳过 Worker 注册
-    console.warn(chalk.yellow("Tunnel 不可用，跳过 Worker 注册"));
-    console.warn(chalk.yellow("Web 通道不可用，仅飞书通道可用\n"));
+  // 飞书-only 模式不需要注册到 Worker
+  // 其他模式（Tunnel 可用或公网模式）才需要注册
+  const needsWorkerRegistration = tunnelManager !== null || isPublicMode;
+
+  if (!needsWorkerRegistration) {
+    if (isFeishuOnly) {
+      console.log(chalk.gray("飞书模式：跳过 Worker 注册（仅飞书通道可用）\n"));
+    } else {
+      // Tunnel 不可用，跳过 Worker 注册
+      console.warn(chalk.yellow("Tunnel 不可用，跳过 Worker 注册"));
+      console.warn(chalk.yellow("Web 通道不可用，仅飞书通道可用\n"));
+    }
     mpUrl = "http://localhost disabled";
   } else {
     console.log(chalk.yellow("向中转服务器注册...\n"));

@@ -21,7 +21,7 @@ export interface Task {
   name: string;
   skill: string;
   desc: string;
-  type: "daily" | "weekly" | "once" | "interval";
+  type: "daily" | "weekly" | "weekday" | "once" | "interval";
   activeHours?: { start: number; end: number }; // 活跃时段（小时），如 {start: 9, end: 24}
   sessionId?: string; // 指定 sessionId 可唤起已有对话
 }
@@ -115,6 +115,9 @@ function isValidTimeFormat(time: string): boolean {
   // 每周任务：周X HH:MM
   if (/^周[一二三四五六日]\s+\d{1,2}:\d{2}$/.test(time)) return true;
 
+  // 工作日任务：周一~周五 HH:MM
+  if (/^周一~\u5468\u4e94\s+\d{1,2}:\d{2}$/.test(time)) return true;
+
   // 一次性任务：YYYY-MM-DD HH:MM
   if (/^\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}$/.test(time)) return true;
 
@@ -131,9 +134,10 @@ function isValidTimeFormat(time: string): boolean {
 /**
  * 检测任务类型
  */
-function detectTaskType(time: string): "daily" | "weekly" | "once" | "interval" {
+function detectTaskType(time: string): "daily" | "weekly" | "weekday" | "once" | "interval" {
   if (/^每\d+(分钟|m|小时|h)$/.test(time)) return "interval";
   if (/^周[一二三四五六日]/.test(time)) return "weekly";
+  if (/^周一~\u5468\u4e94/.test(time)) return "weekday";
   if (/^\d{4}-\d{2}-\d{2}/.test(time)) return "once";
   return "daily";
 }
@@ -159,6 +163,8 @@ export function matchTime(taskTime: string, now: Date): boolean {
       return matchDailyTime(taskTime, now);
     case "weekly":
       return matchWeeklyTime(taskTime, now);
+    case "weekday":
+      return matchWeekdayTime(taskTime, now);
     case "once":
       return matchOnceTime(taskTime, now);
     case "interval":
@@ -173,6 +179,30 @@ export function matchTime(taskTime: string, now: Date): boolean {
  */
 function matchDailyTime(taskTime: string, now: Date): boolean {
   const [taskHour, taskMinute] = parseHourMinute(taskTime);
+  const nowHour = now.getHours();
+  const nowMinute = now.getMinutes();
+
+  return isWithinTolerance(taskHour, taskMinute, nowHour, nowMinute);
+}
+
+/**
+ * 匹配工作日任务（周一到周五）
+ */
+function matchWeekdayTime(taskTime: string, now: Date): boolean {
+  // 解析：周一~周五 HH:MM
+  const match = taskTime.match(/^周一~\u5468\u4e94\s+(\d{1,2}):(\d{2})$/);
+  if (!match) return false;
+
+  const [, hourStr, minuteStr] = match;
+
+  // 检查今天是周几（周日=0, 周一=1, ..., 周六=6）
+  const nowDay = now.getDay();
+  // 工作日：周一=1 到 周五=5
+  if (nowDay === 0 || nowDay === 6) return false; // 周末不执行
+
+  // 检查时间
+  const taskHour = parseInt(hourStr, 10);
+  const taskMinute = parseInt(minuteStr, 10);
   const nowHour = now.getHours();
   const nowMinute = now.getMinutes();
 
