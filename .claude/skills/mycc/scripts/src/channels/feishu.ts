@@ -36,6 +36,8 @@ export interface FeishuChannelConfig {
   /** 是否折叠工具调用信息：true（折叠）或 false（展开），默认 true（折叠）
    * 类似网页端体验，显示为可展开的代码块 */
   foldToolUse?: boolean;
+  /** 是否禁用代理，默认 false（不禁用代理） */
+  disableProxy?: boolean;
 }
 
 /**
@@ -72,6 +74,12 @@ export class FeishuChannel implements MessageChannel {
   private currentMessageId: string | null = null;
   private currentReactionId: string | null = null;
 
+  // 动态 chat_id：记录当前消息来源的群聊 ID
+  private currentChatId: string | null = null;
+  // 动态发送者信息：记录私聊消息的发送者 ID 和类型
+  private currentSenderId: string | null = null;
+  private currentSenderType: "open_id" | "user_id" | "union_id" | null = null;
+
   constructor(config?: FeishuChannelConfig) {
     // 从环境变量读取配置
     this.config = config || {
@@ -82,9 +90,9 @@ export class FeishuChannel implements MessageChannel {
       connectionMode: (process.env.FEISHU_CONNECTION_MODE as "websocket" | "poll") || "poll",
       encryptKey: process.env.FEISHU_ENCRYPT_KEY,
       verificationToken: process.env.FEISHU_VERIFICATION_TOKEN,
-      showToolUse: process.env.FEISHU_SHOW_TOOL_USE === "false" ?false : true, // 默认 true
+      showToolUse: process.env.FEISHU_SHOW_TOOL_USE === "false" ? false : true, // 默认 true
       foldToolUse: process.env.FEISHU_FOLD_TOOL_USE === "false" ? false : true, // 默认 true（折叠）
-disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不禁用代理）
+      disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不禁用代理）
     };
   }
 
@@ -121,11 +129,6 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
 
     // 如果没有配置飞书凭证，静默跳过
     if (!this.config.appId || !this.config.appSecret) {
-      return;
-    }
-
-    // 没有配置接收用户，跳过
-    if (!this.config.receiveUserId) {
       return;
     }
 
@@ -318,6 +321,41 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
             const event = data as any;
             const messageId = event?.message?.message_id;
 
+            // 清空之前的发送者信息
+            this.currentSenderId = null;
+            this.currentSenderType = null;
+            this.currentChatId = null;
+
+            // 提取消息信息和发送者信息
+            const chatId = event?.message?.chat_id;
+            const chatType = event?.message?.chat_type; // "group" 或 "p2p"（私聊）
+            const sender = event?.sender as any;
+
+            // 提取发送者 ID（用于私聊回复）
+            if (sender) {
+              const idType = sender?.id_type || "open_id";
+              const senderId = sender?.[idType] || sender?.open_id;
+              if (senderId) {
+                this.currentSenderId = senderId;
+                this.currentSenderType = idType;
+                console.log(`[FeishuChannel] [DEBUG] 发送者 ID: ${senderId} (type: ${idType})`);
+              }
+            }
+
+            // 只有群聊消息才设置 currentChatId
+            if (chatType === "group" && chatId) {
+              this.currentChatId = chatId;
+              console.log(`[FeishuChannel] 收到消息来自群聊: ${chatId}`);
+              // 清空发送者信息，优先使用群聊
+              this.currentSenderId = null;
+              this.currentSenderType = null;
+            } else if (chatType === "p2p") {
+              console.log(`[FeishuChannel] 收到私聊消息，将回复给发送者`);
+            } else if (chatId) {
+              console.log(`[FeishuChannel] 收到消息，chat_type: ${chatType}, chat_id: ${chatId}`);
+              this.currentChatId = chatId;
+            }
+
             // 添加"正在输入"表态（敲键盘 emoji）
             if (messageId) {
               this.addTypingIndicator(messageId).catch(() => {
@@ -379,7 +417,7 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
         appId: this.config.appId,
         appSecret: this.config.appSecret,
         domain: Lark.Domain.Feishu,
-        loggerLevel: Lark.LoggerLevel.INFO,
+        loggerLevel: Lark.LoggerLevel.info,
       };
 
       if (this.config.disableProxy) {
@@ -498,6 +536,8 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
     }
     this.eventDispatcher = null;
     this.messageCallback = null;
+    this.currentSenderId = null;
+    this.currentSenderType = null;
   }
 
   /**
@@ -797,10 +837,10 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
       const filePath = path.join(saveDir, fileName);
       await fs.writeFile(filePath, Buffer.from(buffer));
 
-      console.log(`[FeishuChannel] ✓ File saved: ${filePath} (${buffer.length} bytes)`);
+      console.log(`[FeishuChannel] ✓ File saved: ${filePath} (${buffer.byteLength} bytes)`);
 
       // 更新 README.md
-      await this.updateFeishuReadme(fileName, filePath, buffer.length);
+      await this.updateFeishuReadme(fileName, filePath, buffer.byteLength);
 
       return { fileName, filePath };
     } catch (error) {
@@ -867,19 +907,46 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
         }
       }
 
-      const userId = this.config.receiveUserId!;
+      // 确定目标 ID 和类型
+      let targetId: string;
+      let receiveIdType: string;
+      let source: string;
+
+      // 优先使用群聊 ID（群组消息）
+      if (this.currentChatId) {
+        targetId = this.currentChatId;
+        receiveIdType = "chat_id";
+        source = "动态 chat_id";
+      }
+      // 如果是私聊，使用发送者 ID
+      else if (this.currentSenderId && this.currentSenderType) {
+        targetId = this.currentSenderId;
+        receiveIdType = this.currentSenderType;
+        source = "动态 sender";
+      }
+      // 降级：使用配置的 receiveUserId
+      else {
+        targetId = this.config.receiveUserId!;
+        receiveIdType = this.config.receiveIdType || "open_id";
+        source = "配置的 receiveUserId";
+      }
+
+      if (!targetId) {
+        console.error("[FeishuChannel] ✗ 没有可用的目标 ID（chat_id、sender_id 或 receiveUserId）");
+        return false;
+      }
+
+      console.log(`[FeishuChannel] 发送到: ${targetId} (类型: ${receiveIdType}, 来源: ${source})`);
 
       // 如果有待发送的图片，先发送图片
       if (sessionId && this.pendingImages.has(sessionId)) {
         const imageKey = this.pendingImages.get(sessionId)!;
-        const imageSent = await this.sendImageMessage(userId, imageKey);
+        const imageSent = await this.sendImageMessage(targetId, receiveIdType, imageKey);
         if (imageSent) {
           // 图片发送成功后，移除记录
           this.pendingImages.delete(sessionId);
         }
       }
-
-      const receiveIdType = this.config.receiveIdType || "open_id";
 
       // 检查文本中是否包含表格
       const tableData = this.parseMarkdownTable(text);
@@ -887,12 +954,12 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
       if (tableData) {
         // 使用交互卡片 + 表格组件
         const cardContent = this.buildTableCard(tableData.beforeTable, tableData.headers, tableData.rows, tableData.afterTable);
-        return await this.sendInteractiveCard(userId, cardContent);
+        return await this.sendInteractiveCard(targetId, receiveIdType, cardContent);
       }
 
 
       // 没有表格和折叠，使用普通 Markdown 消息
-      return await this.sendMarkdownMessage(userId, text);
+      return await this.sendMarkdownMessage(targetId, receiveIdType, text);
     } catch (error) {
       console.error("[FeishuChannel] ✗ Send error:", error);
       return false;
@@ -902,10 +969,8 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
   /**
    * 发送交互卡片消息
    */
-  private async sendInteractiveCard(userId: string, card: any): Promise<boolean> {
+  private async sendInteractiveCard(userId: string, receiveIdType: string, card: any): Promise<boolean> {
     try {
-      const receiveIdType = this.config.receiveIdType || "open_id";
-
       const responseBody = {
         receive_id: userId,
         msg_type: "interactive",
@@ -940,10 +1005,8 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
    * 发送 Markdown 消息（使用交互式卡片格式）
    * 使用 tag: "markdown" 支持代码块渲染
    */
-  private async sendMarkdownMessage(userId: string, text: string): Promise<boolean> {
+  private async sendMarkdownMessage(userId: string, receiveIdType: string, text: string): Promise<boolean> {
     try {
-      const receiveIdType = this.config.receiveIdType || "open_id";
-
       // 构建交互式卡片，使用 markdown 标签支持代码块渲染
       const cardContent = {
         "config": {
@@ -990,9 +1053,8 @@ disableProxy: process.env.FEISHU_DISABLE_PROXY === "true", // 默认 false（不
   /**
    * 发送图片消息到飞书
    */
-  private async sendImageMessage(userId: string, imageKey: string): Promise<boolean> {
+  private async sendImageMessage(userId: string, receiveIdType: string, imageKey: string): Promise<boolean> {
     try {
-      const receiveIdType = this.config.receiveIdType || "open_id";
       const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
         method: "POST",
         headers: {
