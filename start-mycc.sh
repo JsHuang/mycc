@@ -29,10 +29,10 @@ NC='\033[0m' # No Color
 clear
 
 echo ""
-echo "============================================" | sed $'s/$/\\e[0;36m/'
-echo "       MyCC Backend v0.5.1" | sed $'s/$/\\e[0;36m/'
-echo "       + 飞书通道 (Feishu)" | sed $'s/$/\\e[0;36m/'
-echo "============================================" | sed $'s/$/\\e[0;36m/'
+echo -e "${CYAN}============================================${NC}"
+echo -e "${CYAN}       MyCC Backend v0.5.1${NC}"
+echo -e "${CYAN}       + 飞书通道 (Feishu)${NC}"
+echo -e "${CYAN}============================================${NC}"
 echo ""
 
 # Check dependencies
@@ -51,12 +51,6 @@ if command -v claude &> /dev/null; then
     echo -e "  ${GREEN}Claude Code: OK${NC}"
 else
     echo -e "  ${YELLOW}WARNING: Claude Code CLI not found in PATH${NC}"
-fi
-
-if command -v cloudflared &> /dev/null; then
-    echo -e "  ${GREEN}cloudflared: OK${NC}"
-else
-    echo -e "  ${YELLOW}WARNING: cloudflared not found in PATH${NC}"
 fi
 
 # Feishu configuration
@@ -103,27 +97,24 @@ fi
 
 echo ""
 
-# Wait for config file
+# Wait for service ready
 echo -e "${YELLOW}[4/5] Waiting for service ready...${NC}"
-timeout=45
+timeout=30
 elapsed=0
 while [ $elapsed -lt $timeout ]; do
-    if [ -f "$CONFIG_FILE" ]; then
-        if command -v jq &> /dev/null; then
-            routeToken=$(jq -r '.routeToken // empty' "$CONFIG_FILE" 2>/dev/null)
-            pairCode=$(jq -r '.pairCode // empty' "$CONFIG_FILE" 2>/dev/null)
-            tunnelUrl=$(jq -r '.tunnelUrl // empty' "$CONFIG_FILE" 2>/dev/null)
-            if [ -n "$routeToken" ] && [ -n "$pairCode" ] && [ -n "$tunnelUrl" ]; then
-                break
-            fi
-        else
-            # Fallback: grep
-            if grep -q '"routeToken"' "$CONFIG_FILE" && \
-               grep -q '"pairCode"' "$CONFIG_FILE" && \
-               grep -q '"tunnelUrl"' "$CONFIG_FILE"; then
-                break
-            fi
+    # Check if backend process is running
+    if kill -0 $BACKEND_PID 2>/dev/null; then
+        # Check if Feishu WebSocket is connected (simple check)
+        if [ -f "$LOG_FILE" ] && grep -q "Feishu WebSocket connected" "$LOG_FILE" 2>/dev/null; then
+            break
         fi
+    else
+        echo ""
+        echo -e "  ${RED}ERROR: Backend process died!${NC}"
+        echo -e "  ${GRAY}Check log: tail -50 '$LOG_FILE'${NC}"
+        echo ""
+        read -p "Press Enter to exit"
+        exit 1
     fi
     sleep 1
     elapsed=$((elapsed + 1))
@@ -132,75 +123,47 @@ done
 
 echo ""
 
-# Check if started successfully
-if [ ! -f "$CONFIG_FILE" ]; then
+# Check if Feishu is configured
+if [ -z "$FEISHU_APP_ID" ]; then
     echo ""
-    echo -e "  ${RED}ERROR: Startup timeout!${NC}"
-    echo -e "  ${GRAY}Check log: tail -50 '$LOG_FILE'${NC}"
+    echo -e "  ${RED}ERROR: FEISHU_APP_ID not configured!${NC}"
+    echo -e "  ${GRAY}Please set FEISHU_APP_ID in .env file${NC}"
     echo ""
     read -p "Press Enter to exit"
     exit 1
 fi
 
-# Read connection info
+# Display service status
 echo ""
-echo "============================================" | sed $'s/$/\\e[0;36m/'
-echo "           Service Started!" | sed $'s/$/\\e[0;32m/'
-echo "============================================" | sed $'s/$/\\e[0;36m/'
-echo ""
-echo -e "${WHITE}+------------------------------------------+${NC}"
-echo -e "${WHITE}|  Connect from your phone:                |${NC}"
-echo -e "${WHITE}+------------------------------------------+${NC}"
-
-if command -v jq &> /dev/null; then
-    mpUrl=$(jq -r '.mpUrl' "$CONFIG_FILE")
-    routeToken=$(jq -r '.routeToken' "$CONFIG_FILE")
-    pairCode=$(jq -r '.pairCode' "$CONFIG_FILE")
-    tunnelUrl=$(jq -r '.tunnelUrl' "$CONFIG_FILE")
-else
-    mpUrl=$(grep '"mpUrl"' "$CONFIG_FILE" | cut -d'"' -f4)
-    routeToken=$(grep '"routeToken"' "$CONFIG_FILE" | cut -d'"' -f4)
-    pairCode=$(grep '"pairCode"' "$CONFIG_FILE" | cut -d'"' -f4)
-    tunnelUrl=$(grep '"tunnelUrl"' "$CONFIG_FILE" | cut -d'"' -f4)
-fi
-
-echo -e "|  ${CYAN}MiniApp URL: ${mpUrl}${NC} |"
-echo -e "|  ${YELLOW}Route Token: ${routeToken}${NC} |"
-echo -e "|  ${YELLOW}Pair Code:    ${pairCode}${NC} |"
-echo -e "|  ${GRAY}Tunnel:       ${tunnelUrl:0:50}${NC} |"
-if [ ${#tunnelUrl} -gt 50 ]; then
-    echo -e "|               ${tunnelUrl:50}${NC} |"
-fi
-echo -e "${WHITE}+------------------------------------------+${NC}"
+echo -e "${CYAN}============================================${NC}"
+echo -e "${GREEN}           Service Started!${NC}"
+echo -e "${CYAN}============================================${NC}"
 echo ""
 
-# Feishu channel status
+# Feishu channel status - Check actual connection
 if [ -n "$FEISHU_APP_ID" ]; then
-    echo -e "${WHITE}+------------------------------------------+${NC}"
-    echo -e "${WHITE}|  Feishu Channel Enabled:                  |${NC}"
-    echo -e "${WHITE}+------------------------------------------+${NC}"
-    echo -e "|  ${CYAN}Feishu Group:   ${FEISHU_RECEIVE_USER_ID}${NC} |"
-    echo -e "|  ${GREEN}Status: ✓ Connected (WebSocket mode)${NC}    |"
-    echo -e "${WHITE}+------------------------------------------+${NC}"
-    echo ""
-fi
-
-# Open browser
-echo "Opening browser..."
-if command -v open &> /dev/null; then
-    # macOS
-    open "$mpUrl" 2>/dev/null || true
-elif command -v xdg-open &> /dev/null; then
-    # Linux
-    xdg-open "$mpUrl" 2>/dev/null || true
+    # Check actual connection status from log
+    if [ -f "$LOG_FILE" ] && grep -q "Feishu WebSocket connected" "$LOG_FILE" 2>/dev/null; then
+        echo -e "${GREEN}✓ 飞书通道已连接${NC}"
+        echo -e "${GRAY}  App ID: ${FEISHU_APP_ID}${NC}"
+        if [ -n "$FEISHU_RECEIVE_USER_ID" ]; then
+            echo -e "${GRAY}  Group: ${FEISHU_RECEIVE_USER_ID}${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ 飞书通道正在连接中...${NC}"
+        echo -e "${GRAY}  App ID: ${FEISHU_APP_ID}${NC}"
+        echo -e "${GRAY}  查看日志获取详细状态: tail -f '$LOG_FILE'${NC}"
+    fi
 else
-    echo -e "  ${YELLOW}Failed to open browser${NC}"
+    echo -e "${RED}✗ 飞书通道未配置${NC}"
+    echo -e "${GRAY}  请在 .env 中设置 FEISHU_APP_ID${NC}"
 fi
+echo ""
 
 echo ""
-echo "============================================" | sed $'s/$/\\e[0;36m/'
-echo "  Commands:" | sed $'s/$/\\e[0;36m/'
-echo "============================================" | sed $'s/$/\\e[0;36m/'
+echo -e "${CYAN}============================================${NC}"
+echo -e "${CYAN}  Commands:${NC}"
+echo -e "${CYAN}============================================${NC}"
 echo ""
 echo -e "  ${GRAY}View logs (live):${NC}"
 echo -e "    ${GRAY}tail -f '$LOG_FILE'${NC}"
@@ -214,17 +177,18 @@ echo ""
 echo "============================================" | sed $'s/$/\\e[0;36m/'
 echo ""
 
-# Show initial logs
-echo "Showing initial logs (will exit in 30s)..."
+# Show initial logs (only last 20 lines, monitor for 10 seconds)
+echo "显示初始日志 (监控 10 秒后自动退出)..."
 echo ""
 
-timeout_end=$(($(date +%s) + 30))
+timeout_end=$(($(date +%s) + 10))
 last_line_count=0
 while [ $(date +%s) -lt $timeout_end ]; do
     if [ -f "$LOG_FILE" ]; then
         current_line_count=$(wc -l < "$LOG_FILE")
         if [ $current_line_count -gt $last_line_count ]; then
-            tail -n +$((last_line_count + 1)) "$LOG_FILE"
+            # Only show last 20 lines
+            tail -n 20 "$LOG_FILE" | tail -n +$((last_line_count + 1))
             last_line_count=$current_line_count
         fi
     fi
@@ -232,8 +196,8 @@ while [ $(date +%s) -lt $timeout_end ]; do
 done
 
 echo ""
-echo "============================================" | sed $'s/$/\\e[0;36m/'
-echo "  Startup script exiting..." | sed $'s/$/\\e[0;32m/'
-echo "  Backend continues running in background" | sed $'s/$/\\e[0;32m/'
-echo "============================================" | sed $'s/$/\\e[0;36m/'
+echo -e "${CYAN}============================================${NC}"
+echo -e "${GREEN}  Startup script exiting...${NC}"
+echo -e "${GREEN}  Backend continues running in background${NC}"
+echo -e "${CYAN}============================================${NC}"
 echo ""

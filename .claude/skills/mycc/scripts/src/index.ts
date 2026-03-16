@@ -169,10 +169,14 @@ async function startServer(args: string[]) {
 
   if (config) {
     console.log(chalk.green("✓ 已加载设备配置"));
-    console.log(chalk.gray(`  设备 ID: ${config.deviceId}`));
-    console.log(chalk.gray(`  配对码: ${config.pairCode}`));
-    if (config.routeToken) {
-      console.log(chalk.gray(`  连接码: ${config.routeToken}\n`));
+    if (!isFeishuOnly) {
+      console.log(chalk.gray(`  设备 ID: ${config.deviceId}`));
+      console.log(chalk.gray(`  配对码: ${config.pairCode}`));
+      if (config.routeToken) {
+        console.log(chalk.gray(`  连接码: ${config.routeToken}\n`));
+      }
+    } else {
+      console.log(chalk.gray(`  设备 ID: ${config.deviceId}`));
     }
   } else {
     // 首次运行，生成新配置
@@ -183,8 +187,12 @@ async function startServer(args: string[]) {
       createdAt: new Date().toISOString()
     };
     console.log(chalk.yellow("首次运行，生成新设备配置"));
-    console.log(chalk.gray(`  设备 ID: ${config.deviceId}`));
-    console.log(chalk.gray(`  配对码: ${config.pairCode}\n`));
+    if (!isFeishuOnly) {
+      console.log(chalk.gray(`  设备 ID: ${config.deviceId}`));
+      console.log(chalk.gray(`  配对码: ${config.pairCode}\n`));
+    } else {
+      console.log(chalk.gray(`  设备 ID: ${config.deviceId}`));
+    }
   }
 
   const { deviceId, pairCode, authToken } = config;
@@ -465,16 +473,25 @@ ${skillLine}
     console.log(chalk.yellow("\n==============================\n"));
   };
 
-  // 显示配对信息
-  printConnectionInfo();
+  // 显示配对信息（飞书模式下跳过）
+  if (!isFeishuOnly) {
+    printConnectionInfo();
 
-  if (authToken) {
-    console.log(chalk.green("✓ 服务已就绪\n"));
+    if (authToken) {
+      console.log(chalk.green("✓ 服务已就绪\n"));
+    } else {
+      console.log(chalk.green("✓ 服务已就绪，扫码配对后即可使用\n"));
+    }
+    console.log(chalk.gray("按回车键重新显示连接信息"));
+    console.log(chalk.gray("按 Ctrl+C 退出\n"));
   } else {
-    console.log(chalk.green("✓ 服务已就绪，扫码配对后即可使用\n"));
+    // 飞书模式：简化输出
+    if (authToken) {
+      console.log(chalk.green("✓ 服务已就绪\n"));
+    } else {
+      console.log(chalk.green("✓ 服务已就绪\n"));
+    }
   }
-  console.log(chalk.gray("按回车键重新显示连接信息"));
-  console.log(chalk.gray("按 Ctrl+C 退出\n"));
 
   // 监听键盘输入，按回车重新打印连接信息
   if (process.stdin.isTTY) {
