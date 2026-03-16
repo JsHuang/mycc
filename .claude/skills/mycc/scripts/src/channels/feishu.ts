@@ -12,6 +12,8 @@ import { findProjectRoot } from "../config.js";
 import Lark from "@larksuiteoapi/node-sdk";
 import path from "path";
 import fs from "fs/promises";
+import { FeishuStreamingSession } from "./feishu-streaming.js";
+// buildMarkdownCard 和 normalizeFeishuMarkdownLinks 已在文件末尾定义
 
 /**
  * 飞书通道配置
@@ -954,12 +956,13 @@ export class FeishuChannel implements MessageChannel {
       if (tableData) {
         // 使用交互卡片 + 表格组件
         const cardContent = this.buildTableCard(tableData.beforeTable, tableData.headers, tableData.rows, tableData.afterTable);
-        return await this.sendInteractiveCard(targetId, receiveIdType, cardContent);
+        return await this.sendCardMessage(targetId, receiveIdType, cardContent);
       }
 
 
-      // 没有表格和折叠，使用普通 Markdown 消息
-      return await this.sendMarkdownMessage(targetId, receiveIdType, text);
+      // 没有表格和折叠，也使用 Schema 2.0 markdown 卡片
+      const card = buildMarkdownCard(text);
+      return await this.sendCardMessage(targetId, receiveIdType, card);
     } catch (error) {
       console.error("[FeishuChannel] ✗ Send error:", error);
       return false;
@@ -967,9 +970,9 @@ export class FeishuChannel implements MessageChannel {
   }
 
   /**
-   * 发送交互卡片消息
+   * 发送交互卡片消息（通用的）
    */
-  private async sendInteractiveCard(userId: string, receiveIdType: string, card: any): Promise<boolean> {
+  private async sendCardMessage(userId: string, receiveIdType: string, card: any): Promise<boolean> {
     try {
       const responseBody = {
         receive_id: userId,
@@ -1007,23 +1010,12 @@ export class FeishuChannel implements MessageChannel {
    */
   private async sendMarkdownMessage(userId: string, receiveIdType: string, text: string): Promise<boolean> {
     try {
-      // 构建交互式卡片，使用 markdown 标签支持代码块渲染
-      const cardContent = {
-        "config": {
-          "wide_screen_mode": true
-        },
-        "elements": [
-          {
-            "tag": "markdown",
-            "content": text
-          }
-        ]
-      };
-
+      // 使用 schema 2.0 markdown 卡片（更完整的 markdown 支持）
+      const card = buildMarkdownCard(text);
       const responseBody = {
         receive_id: userId,
         msg_type: "interactive",
-        content: JSON.stringify(cardContent)
+        content: JSON.stringify(card)
       };
 
       const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
@@ -1380,9 +1372,126 @@ private parseTableRow(line: string): string[] {
 
     return result.join("\n");
   }
+
+ /**
+  * 创建飞书流式卡片会话
+  * 用于 AI 回复实时更新到单个卡片，替代逐条发送消息
+  */
+ createStreamingSession(): FeishuStreamingSession {
+  return new FeishuStreamingSession(
+   { appId: this.config.appId, appSecret: this.config.appSecret },
+   (msg) => console.log(msg)
+  );
+ }
+
+ /**
+  * 暴露配置（供流式会话使用）
+  */
+ getConfig(): FeishuChannelConfig {
+  return this.config;
+ }
+
 }
 
 /** sleep 辅助函数 */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ==================== 来自 Aster110 合并的函数 ====================
+
+/**
+ * 集成自 clawdbot-feishu（MIT License）
+ * 来源: https://github.com/m1heng/clawdbot-feishu
+ */
+
+const FENCED_CODE_BLOCK_RE = /(```[\s\S]*?```)/g;
+const INLINE_CODE_RE = /(`[^`\n]*`)/g;
+const URL_RE = /https?:\/\/[^\s<>"'`]+/g;
+const TRAILING_PUNCT_RE = /[.,;!?\u3002\uff0c\uff1b\uff01\uff1f\u3001]/u;
+const AUTO_LINK_RE = /<\s*(https?:\/\/[^>\s]+)\s*>/g;
+
+function normalizeUrlForFeishu(url: string): string {
+  return url.replace(/_/g, "%5F").replace(/\(/g, "%28").replace(/\)/g, "%29");
+}
+
+function buildMarkdownLink(url: string): string {
+  const label = url.replace(/[\[\]]/g, "\\$&");
+  return `[${label}](${url})`;
+}
+
+function countParens(text: string): { open: number; close: number } {
+  let open = 0,
+    close = 0;
+  for (const c of text) {
+    if (c === "(") open++;
+    else if (c === ")") close++;
+  }
+  return { open, close };
+}
+
+function splitTrailingPunctuation(rawUrl: string): { url: string; trailing: string } {
+  let url = rawUrl,
+    trailing = "";
+  let { open, close } = countParens(rawUrl);
+  while (url.length > 0) {
+    const tail = url.slice(-1);
+    const closeParenOverflow = tail === ")" && close > open;
+    if (!TRAILING_PUNCT_RE.test(tail) && !closeParenOverflow) break;
+    if (tail === ")") close--;
+    trailing = tail + trailing;
+    url = url.slice(0, -1);
+  }
+  return { url, trailing };
+}
+
+function wrapBareUrls(text: string): string {
+  const converted = text.replace(AUTO_LINK_RE, (_full, rawUrl: string) => {
+    const { url, trailing } = splitTrailingPunctuation(rawUrl);
+    if (!url) return _full;
+    return `${buildMarkdownLink(normalizeUrlForFeishu(url))}${trailing}`;
+  });
+  return converted.replace(URL_RE, (raw, offset, input) => {
+    const { url, trailing } = splitTrailingPunctuation(raw);
+    if (!url) return raw;
+    const isMarkdownDestination = offset >= 2 && input.slice(offset - 2, offset) === "](";
+    const normalizedUrl = normalizeUrlForFeishu(url);
+    if (isMarkdownDestination) return `${normalizedUrl}${trailing}`;
+    return `${buildMarkdownLink(normalizedUrl)}${trailing}`;
+  });
+}
+
+function normalizeNonCodeSegments(text: string): string {
+  return text
+    .split(INLINE_CODE_RE)
+    .map((seg, idx) => (idx % 2 === 1 && seg.startsWith("`") ? seg : wrapBareUrls(seg)))
+    .join("");
+}
+
+/**
+ * 规范化飞书 markdown 中的 URL
+ * 将裸 URL 和自动链接转换为标准 markdown 链接格式，避免飞书截断
+ */
+export function normalizeFeishuMarkdownLinks(text: string): string {
+  if (!text || (!text.includes("http://") && !text.includes("https://"))) return text;
+  return text
+    .split(FENCED_CODE_BLOCK_RE)
+    .map((block, idx) =>
+      idx % 2 === 1 && block.startsWith("```") ? block : normalizeNonCodeSegments(block)
+    )
+    .join("");
+}
+
+/**
+ * 构建飞书 schema 2.0 markdown 卡片
+ * 完整支持代码块、表格、链接、加粗等 markdown 语法
+ */
+export function buildMarkdownCard(text: string): Record<string, unknown> {
+  return {
+    schema: "2.0",
+    config: { wide_screen_mode: true },
+    body: {
+      elements: [{ tag: "markdown", content: text }],
+    },
+  };
 }

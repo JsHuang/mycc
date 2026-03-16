@@ -20,6 +20,15 @@ export class FeishuCommands {
   private deps: FeishuCommandsDeps;
   private _currentSessionId: string | null = null;
 
+  /** 系统标签前缀列表（用于识别系统会话） */
+  private static readonly SYSTEM_TAG_PATTERNS = [
+    '<command-',
+    '<user-prompt-',
+    '<short-term-',
+    '<current-time',
+    '<system-reminder',
+  ];
+
   constructor(deps: FeishuCommandsDeps) {
     this.deps = deps;
   }
@@ -30,6 +39,15 @@ export class FeishuCommands {
 
   set currentSessionId(id: string | null) {
     this._currentSessionId = id;
+  }
+
+  /**
+   * 判断是否为系统会话（包含系统标签）
+   * 系统会话通常是由 CC 内部命令产生的，不适合作为飞书自动选择的默认会话
+   */
+  private static isSystemSession(conv: any): boolean {
+    const text = conv.customTitle || conv.firstPrompt || "";
+    return FeishuCommands.SYSTEM_TAG_PATTERNS.some(pattern => text.includes(pattern));
   }
 
   /**
@@ -54,18 +72,27 @@ export class FeishuCommands {
       console.log(`[CC] 无活跃会话，尝试自动选择最近的历史会话`);
 
       try {
-        const result = await this.deps.adapter.listHistory(this.deps.cwd, 1);
-        if (result.conversations.length > 0) {
-          const latestSession = result.conversations[0];
-          this._currentSessionId = latestSession.sessionId;
+        // 获取更多历史记录（10条），以便跳过系统会话找到正常对话
+        const result = await this.deps.adapter.listHistory(this.deps.cwd, 10);
+
+        // 跳过系统会话，找到第一个正常对话会话
+        const normalSession = result.conversations.find(c => !FeishuCommands.isSystemSession(c));
+
+        if (normalSession) {
+          this._currentSessionId = normalSession.sessionId;
           autoSelectedSession = true;  // 标记为自动选择
 
-          const title = latestSession.customTitle || latestSession.firstPrompt?.substring(0, 30) || "历史会话";
-          const timeAgo = this.formatTimeAgo(latestSession.lastTime || latestSession.modified || Date.now());
+          const title = normalSession.customTitle || normalSession.firstPrompt?.substring(0, 30) || "历史会话";
+          const timeAgo = this.formatTimeAgo(normalSession.lastTime || normalSession.modified || Date.now());
 
           console.log(`[CC] 自动选择会话: ${this._currentSessionId} (${title})`);
           showSessionHint = true;
           sessionHint = `已自动使用最近的会话：${title} (${timeAgo})\n\n`;
+        } else if (result.conversations.length > 0) {
+          // 有历史记录但都是系统会话，创建新会话
+          console.log(`[CC] 最近的会话都是系统会话，创建新会话`);
+          await this.sendToFeishu("检测到最近的会话是系统命令会话，已自动切换到新会话。\n\n");
+          // 继续执行下面的逻辑，不带 sessionId 会创建新会话
         } else {
           console.log(`[CC] 没有历史会话，显示帮助信息`);
           await this.sendToFeishu("还没有会话记录。\n\n发送任意消息开始新对话\n发送 /help 查看所有命令");
@@ -266,8 +293,15 @@ export class FeishuCommands {
 
       let output = `历史会话 (共 ${result.total} 个，显示最近 ${conversations.length} 个)\n\n`;
 
+      // 统计系统会话数量
+      const systemSessionCount = conversations.filter(c => FeishuCommands.isSystemSession(c)).length;
+      if (systemSessionCount > 0) {
+        output += `* 包含 ${systemSessionCount} 个系统会话（自动跳过）\n\n`;
+      }
+
       conversations.forEach((conv, index) => {
         const isCurrent = conv.sessionId === this._currentSessionId ? " [当前]" : "";
+        const isSystem = FeishuCommands.isSystemSession(conv) ? " [系统]" : "";
 
         let title = "未命名会话";
         if (conv.customTitle) {
@@ -279,11 +313,12 @@ export class FeishuCommands {
         }
 
         const timeAgo = this.formatTimeAgo(conv.lastTime || conv.modified || Date.now());
-        output += `${index + 1}. ${title}${isCurrent}\n`;
+        output += `${index + 1}. ${title}${isCurrent}${isSystem}\n`;
         output += `   ${timeAgo}\n\n`;
       });
 
       output += `使用 /switch <序号> 切换到某个会话`;
+      output += `\n\n注：系统会话由 CC 内部命令产生，不建议用于飞书对话。`;
 
       await this.sendToFeishu(output);
     } catch (err) {
