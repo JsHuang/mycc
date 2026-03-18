@@ -1,57 +1,59 @@
 ---
 name: read-gzh
-description: 读取微信公众号文章并总结。触发词："/read-gzh"、"帮我读一下这篇公众号"
+description: 自动读取公众号文章、生成总结并上传到飞书云盘。触发词："/read-gzh"
 ---
 
 # 读取公众号文章
 
-给 cc 一个微信公众号链接，自动抓取文章并生成结构化总结。
+给 cc 一个微信公众号链接，自动完成：抓取文章 → 生成结构化总结 → 上传飞书云盘
 
 ## 触发词
 
 - `/read-gzh <链接>`
-- "帮我读一下这篇公众号"
 
 ---
 
 ## 工作流程
 
-1. **抓取文章** - 脚本抓取公众号内容（标题，作者，正文）
-2. **AI 总结** - cc 生成结构化总结（核心观点、关键信息、金句提取）
-4. **上传到飞书云盘** - 自动上传结构化总结到云盘文件夹
+1. **抓取文章** - 脚本自动抓取公众号内容（标题，作者，正文）
+2. **AI 总结** - cc 基于抓取的内容生成结构化总结
+3. **上传到飞书云盘** - 自动上传到云盘文件夹
 
 ---
 
 ## 执行流程
 
-### Step 1: 抓取文章
+### Step 1: 运行自动化脚本
 
 ```bash
-python3 .claude/skills/read-gzh/scripts/fetch_wechat_article.py "<公众号链接>"
+python .claude/skills/read-gzh/scripts/auto_read_gzh.py "<公众号链接>"
 ```
 
-脚本会抓取：标题、作者、正文，直接输出到终端
+脚本完成后会输出：
+- 文章标题
+- 作者
+- 正文长度
 
-### Step 2: AI 总结
+### Step 2: AI 生成总结
 
-cc 阅读抓取的内容，生成结构化总结(参考总结格式部分)
+cc 阅读抓取的内容，按照指定格式生成结构化总结
 
 ### Step 3: 上传到飞书云盘
 
-直接上传 AI 总结内容到飞书云盘
+调用上传函数自动上传：
 
-**调用方式**：
 ```python
 import sys
 sys.path.insert(0, '.claude/skills/read-gzh/scripts')
-from feishu_doc import upload_summary
+from auto_read_gzh import upload_to_feishu
 
-result = upload_summary(
-    title="2026-03-06-原文标题",  # 不含 .md 后缀
-    content=ai_summary_content      # AI 总结的 markdown 内容
+result = upload_to_feishu(
+    title="大海捞针：用 LLM 进行漏洞研究",
+    content=ai_summary_content
 )
-print(result['url'])  # 打印飞书文档链接
 ```
+
+返回文档链接和文件名。
 
 ---
 

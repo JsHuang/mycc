@@ -45,6 +45,7 @@ def fetch_wechat_article(url: str) -> dict:
         ["curl", "-s", "-L", "-A", WECHAT_UA, url],
         capture_output=True,
         text=True,
+        encoding='utf-8',
         timeout=30,
     )
     content = result_proc.stdout
